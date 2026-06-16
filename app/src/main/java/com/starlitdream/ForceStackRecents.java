@@ -19,7 +19,7 @@ public class ForceStackRecents implements IXposedHookLoadPackage {
                 XposedHelpers.findAndHookMethod(cl, "getSettingsValue",
                     String.class, String.class,
                     new XC_MethodHook() {
-                        protected Object afterHookedMethod(MethodHookParam param) {
+                        protected void afterHookedMethod(MethodHookParam param) {
                             String key = (String) param.args[0];
                             if (key != null && (
                                 key.contains("recent_style") ||
@@ -31,33 +31,13 @@ public class ForceStackRecents implements IXposedHookLoadPackage {
                                 // Replace the return value
                                 param.setResult("stacked");
                             }
-                            return null; // Use original result if not matched
+                            // Use original result if not matched
                         }
                     }
                 );
                 XposedBridge.log("FSR_SystemUI: hooked CommonSettingsValueProxy");
             } catch (Exception e) {
                 XposedBridge.log("FSR_SystemUI: " + e.getMessage());
-            }
-
-            // Also try hooking the Companion
-            try {
-                Class cl = p.classLoader.loadClass(
-                    "com.oplusos.systemui.common.settingsvalue.CommonSettingsValueProxy$Companion"
-                );
-                XposedBridge.log("FSR_SystemUI: found Companion");
-                // Hook any invoke method on Companion
-                XposedHelpers.findAndHookMethod(cl, "invoke",
-                    new XC_MethodReplacement() {
-                        protected Object replaceHookedMethod(MethodHookParam param) {
-                            XposedBridge.log("FSR_SystemUI: Companion.invoke called");
-                            return Boolean.TRUE;
-                        }
-                    }
-                );
-                XposedBridge.log("FSR_SystemUI: hooked Companion");
-            } catch (Exception e) {
-                XposedBridge.log("FSR_SystemUI Companion: " + e.getMessage());
             }
         }
 
