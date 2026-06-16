@@ -66,6 +66,11 @@ jobs:
 
           $ANDROID_SDK_ROOT/build-tools/35.0.1/aapt add build/apk/unsigned.apk classes.dex
 
+          # Add assets/xposed_init for LSPosed detection
+          mkdir -p build/apk/assets
+          cp app/src/main/assets/xposed_init build/apk/assets/xposed_init
+          (cd build/apk && $ANDROID_SDK_ROOT/build-tools/35.0.1/aapt add ../unsigned.apk assets/xposed_init)
+
           # Align and sign with debug key
           $ANDROID_SDK_ROOT/build-tools/35.0.1/zipalign -f -p 4 \
             build/apk/unsigned.apk build/apk/aligned.apk
