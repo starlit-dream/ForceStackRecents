@@ -1,0 +1,84 @@
+name: Build LSPosed Module
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 35
+          build-tools: 35.0.1
+          ndk-version: none
+
+      - name: Compile Java
+        run: |
+          mkdir -p bin
+          javac -cp app/libs/api-82.jar -d bin \
+            -source 7 -target 7 \
+            app/src/main/java/com/starlitdream/ForceStackRecents.java
+
+      - name: Convert to DEX
+        run: |
+          $ANDROID_SDK_ROOT/build-tools/35.0.1/dx --dex --output=classes.dex bin/
+
+      - name: Build APK
+        run: |
+          mkdir -p build/apk
+          # Create AndroidManifest.xml
+          cat > build/apk/AndroidManifest.xml << 'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="com.starlitdream.forcestackrecents">
+              <application android:label="ForceStackRecents">
+                  <meta-data android:name="xposedmodule" android:value="true" />
+                  <meta-data android:name="xposeddescription" android:value="Force stacked recents on OnePlus/ColorOS with third-party launcher" />
+                  <meta-data android:name="xposedminversion" android:value="82" />
+              </application>
+          </manifest>
+          XML
+
+          # Package with aapt
+          $ANDROID_SDK_ROOT/build-tools/35.0.1/aapt package -f \
+            -M build/apk/AndroidManifest.xml \
+            -I $ANDROID_SDK_ROOT/platforms/android-35/android.jar \
+            -F build/apk/unsigned.apk
+
+          $ANDROID_SDK_ROOT/build-tools/35.0.1/aapt add build/apk/unsigned.apk classes.dex
+
+          # Align and sign with debug key
+          $ANDROID_SDK_ROOT/build-tools/35.0.1/zipalign -f -p 4 \
+            build/apk/unsigned.apk build/apk/aligned.apk
+
+          # Generate debug key and sign
+          keytool -genkey -v -keystore build/apk/debug.keystore \
+            -alias androiddebugkey -storepass android -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+          $ANDROID_SDK_ROOT/build-tools/35.0.1/apksigner sign \
+            --ks build/apk/debug.keystore \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --out ForceStackRecents.apk \
+            build/apk/aligned.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ForceStackRecents
+          path: ForceStackRecents.apk
