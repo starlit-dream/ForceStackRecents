@@ -34,7 +34,7 @@ jobs:
 
       - name: Convert to DEX
         run: |
-          $ANDROID_SDK_ROOT/build-tools/35.0.1/dx --dex --output=classes.dex bin/
+          $ANDROID_SDK_ROOT/build-tools/35.0.1/d8 --lib $ANDROID_SDK_ROOT/platforms/android-35/android.jar --output . bin/
 
       - name: Build APK
         run: |
