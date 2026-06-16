@@ -37,7 +37,10 @@ jobs:
           # Package class files into a jar, then convert to dex
           cd bin
           jar cf classes.jar *.class
-          $ANDROID_SDK_ROOT/build-tools/35.0.1/d8 --lib $ANDROID_SDK_ROOT/platforms/android-35/android.jar --output ../classes.dex classes.jar
+          mkdir -p ../dexout
+          $ANDROID_SDK_ROOT/build-tools/35.0.1/d8 --lib $ANDROID_SDK_ROOT/platforms/android-35/android.jar --output ../dexout classes.jar
+          # d8 outputs classes.dex inside the output directory
+          cp ../dexout/classes.dex ../classes.dex
 
       - name: Build APK
         run: |
