@@ -29,7 +29,7 @@ jobs:
         run: |
           mkdir -p bin
           javac -cp app/libs/api-82.jar -d bin \
-            -source 7 -target 7 \
+            -source 8 -target 8 \
             app/src/main/java/com/starlitdream/ForceStackRecents.java
 
       - name: Convert to DEX
