@@ -30,7 +30,8 @@ jobs:
           mkdir -p bin
           javac -cp app/libs/api-82.jar -d bin \
             -source 8 -target 8 \
-            app/src/main/java/com/starlitdream/ForceStackRecents.java
+            app/src/main/java/com/starlitdream/ForceStackRecents.java \
+            app/src/main/java/com/starlitdream/NotificationFix.java
 
       - name: Convert to DEX
         run: |
@@ -50,9 +51,9 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
               package="com.starlitdream.forcestackrecents">
-              <application android:label="ForceStackRecents">
+              <application android:label="ColorOS Tweaks">
                   <meta-data android:name="xposedmodule" android:value="true" />
-                  <meta-data android:name="xposeddescription" android:value="Force stacked recents on OnePlus/ColorOS with third-party launcher" />
+                  <meta-data android:name="xposeddescription" android:value="Force stacked recents + QQ notification avatar fix" />
                   <meta-data android:name="xposedminversion" android:value="82" />
               </application>
           </manifest>
@@ -65,11 +66,6 @@ jobs:
             -F build/apk/unsigned.apk
 
           $ANDROID_SDK_ROOT/build-tools/35.0.1/aapt add build/apk/unsigned.apk classes.dex
-
-          # Add assets/xposed_init for LSPosed detection
-          mkdir -p assets
-          cp app/src/main/assets/xposed_init assets/xposed_init
-          $ANDROID_SDK_ROOT/build-tools/35.0.1/aapt add build/apk/unsigned.apk assets/xposed_init
 
           # Align and sign with debug key
           $ANDROID_SDK_ROOT/build-tools/35.0.1/zipalign -f -p 4 \
