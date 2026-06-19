@@ -3,8 +3,6 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
-import android.app.Notification;
-import android.service.notification.StatusBarNotification;
 
 /**
  * Fix QQ conversation notifications on ColorOS 16 (OnePlus Ace 6T):
@@ -26,12 +24,8 @@ public class NotificationFix implements IXposedHookLoadPackage {
     }
 
     /**
-     * Hook 1: Force conversation notifications to show avatar (not icon)
-     * in heads-up and notification panel.
-     *
-     * ColorOS's OplusNotificationIconAreaBinder.oplusShouldShowIcon()
-     * returns true for non-important conversations → shows small icon.
-     * We return false when the notification is a conversation → avatar shows.
+     * Hook oplusShouldShowIcon — force false for conversation notifications.
+     * This makes heads-up and panel show avatar instead of small icon.
      */
     private void hookOplusShouldShowIcon(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
@@ -39,49 +33,47 @@ public class NotificationFix implements IXposedHookLoadPackage {
                 "com.oplus.systemui.statusbar.icon.ui.binder.OplusNotificationIconAreaBinder"
             );
             XposedHelpers.findAndHookMethod(clazz, "oplusShouldShowIcon",
-                Object.class, // NotificationEntry — use Object to avoid class loading issues
+                Object.class,
                 new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) {
                         Object entry = param.args[0];
                         if (entry == null) return;
                         try {
-                            // Get StatusBarNotification via reflection (avoid direct class ref)
+                            // Get StatusBarNotification reflectively
                             Object sbn = XposedHelpers.callMethod(entry, "getSbn");
                             if (sbn == null) return;
-                            Notification notif = (Notification) XposedHelpers.callMethod(sbn, "getNotification");
+
+                            // Get Notification object
+                            Object notif = XposedHelpers.callMethod(sbn, "getNotification");
                             if (notif == null) return;
 
-                            // Check if it's a conversation notification (has shortcut)
-                            // Also check for MessagingStyle which QQ uses after modification
-                            if (notif.isConversation() || notif.extras != null) {
-                                // Cast to android.app.Notification.MessagingStyle if available
-                                Object style = notif.extras.get("android.selfDisplayName");
-                                if (style != null) {
-                                    // Has a conversation display name → definitely a conversation
-                                    param.setResult(Boolean.FALSE);
-                                    return;
-                                }
+                            // Check extras for conversation display name
+                            Object extras = XposedHelpers.getObjectField(notif, "extras");
+                            if (extras == null) return;
+
+                            // "android.selfDisplayName" indicates a conversation-style notification
+                            Object selfName = XposedHelpers.callMethod(extras, "get",
+                                "android.selfDisplayName");
+                            if (selfName != null) {
+                                // Conversation notification — don't force icon
+                                param.setResult(Boolean.FALSE);
                             }
                         } catch (Exception e) {
-                            XposedBridge.log("[NotifFix] oplusShouldShowIcon error: " + e.getMessage());
+                            // Silently skip on reflection errors
                         }
                     }
                 }
             );
-            XposedBridge.log("[NotifFix] hooked oplusShouldShowIcon ✓");
+            XposedBridge.log("[NotifFix] hooked oplusShouldShowIcon OK");
         } catch (Exception e) {
             XposedBridge.log("[NotifFix] hook oplusShouldShowIcon FAILED: " + e.getMessage());
         }
     }
 
     /**
-     * Hook 2: Fix duplicate sender name in conversation notification headers.
-     *
-     * ColorOS's OplusNotificationHeaderViewWrapperEx.resolveHeaderViewsPlus()
-     * adds the shortcut's shortLabel as an extra header title.
-     * When QQ is using MessagingStyle, the sender name already appears in each
-     * message bubble → skip the extra header to avoid duplication.
+     * Hook resolveHeaderViewsPlus — skip duplicate conversation title
+     * when notification uses MessagingStyle (e.g. QQ after module modification).
      */
     private void hookResolveHeaderViewsPlus(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
@@ -93,11 +85,9 @@ public class NotificationFix implements IXposedHookLoadPackage {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) {
                         try {
-                            // Check if the wrapped notification uses MessagingStyle
                             Object base = XposedHelpers.callMethod(param.thisObject, "getBase");
                             if (base == null) return;
 
-                            // Try to get the row and its notification entry
                             Object row = XposedHelpers.getObjectField(base, "mRow");
                             if (row == null) return;
 
@@ -107,23 +97,27 @@ public class NotificationFix implements IXposedHookLoadPackage {
                             Object sbn = XposedHelpers.callMethod(entry, "getSbn");
                             if (sbn == null) return;
 
-                            Notification notif = (Notification) XposedHelpers.callMethod(sbn, "getNotification");
+                            Object notif = XposedHelpers.callMethod(sbn, "getNotification");
+                            if (notif == null) return;
 
-                            // If notification uses MessagingStyle (like QQ after module modification),
-                            // skip the extra header title rendering to avoid duplicate sender name
-                            if (notif.extras != null && notif.extras.containsKey("android.selfDisplayName")) {
-                                // Already has a conversation sender display → skip extra label
-                                // Setting mUpdateExpandability to true tells the renderer
-                                // that the header is already complete
-                                XposedHelpers.callMethod(param.thisObject, "setUpdateExpandability", true);
+                            Object extras = XposedHelpers.getObjectField(notif, "extras");
+                            if (extras == null) return;
+
+                            // Check if notification has a conversation display name
+                            Object selfName = XposedHelpers.callMethod(extras, "get",
+                                "android.selfDisplayName");
+                            if (selfName != null) {
+                                // MessagingStyle notification — skip extra header label
+                                XposedHelpers.callMethod(param.thisObject,
+                                    "setUpdateExpandability", true);
                             }
                         } catch (Exception e) {
-                            XposedBridge.log("[NotifFix] resolveHeaderViewsPlus error: " + e.getMessage());
+                            // Silently skip on reflection errors
                         }
                     }
                 }
             );
-            XposedBridge.log("[NotifFix] hooked resolveHeaderViewsPlus ✓");
+            XposedBridge.log("[NotifFix] hooked resolveHeaderViewsPlus OK");
         } catch (Exception e) {
             XposedBridge.log("[NotifFix] hook resolveHeaderViewsPlus FAILED: " + e.getMessage());
         }
