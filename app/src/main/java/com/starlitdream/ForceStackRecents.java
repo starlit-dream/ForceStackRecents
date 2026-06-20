@@ -127,6 +127,30 @@ public class ForceStackRecents implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             log("StackRecentsViewDelegate.getPageNearestToAnchorOfScreen", t);
         }
+
+        try {
+            Class<?> recentsViewClass = loader.loadClass("com.android.quickstep.views.RecentsView");
+            Class<?> cl = loader.loadClass("com.oplus.quickstep.layout.IPageScrollsCalculator");
+            XposedHelpers.findAndHookMethod(cl, "getScrollForPage", recentsViewClass, Integer.TYPE, int[].class, Boolean.TYPE, new XC_MethodHook() {
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (!(param.args[1] instanceof Integer)) {
+                        return;
+                    }
+                    int pageCount = getRecentsPageCount(param.args[0], param.args[2]);
+                    if (pageCount <= 0) {
+                        return;
+                    }
+                    int index = ((Integer) param.args[1]).intValue();
+                    int clamped = clamp(index, 0, pageCount - 1);
+                    if (clamped != index) {
+                        param.args[1] = Integer.valueOf(clamped);
+                    }
+                }
+            });
+            log("hooked IPageScrollsCalculator.getScrollForPage(RecentsView,int,int[],boolean) boundary clamp");
+        } catch (Throwable t) {
+            log("IPageScrollsCalculator.getScrollForPage", t);
+        }
     }
 
     /**
@@ -193,7 +217,6 @@ public class ForceStackRecents implements IXposedHookLoadPackage {
                     hideRecentsDecor(param.thisObject);
                 }
             });
-            hookHideRecentsDecorAfterNoArg(cl, "onPause");
             hookHideRecentsDecorAfterNoArg(cl, "onStop");
             hookHideRecentsDecorAfterNoArg(cl, "onDestroy");
             log("hooked RecentsActivity lifecycle stale decor cleanup");
@@ -250,6 +273,15 @@ public class ForceStackRecents implements IXposedHookLoadPackage {
     private static int getRecentsPageCount(Object delegate) {
         int layoutOffsetCount = getArrayLength(getFieldObject(delegate, "mPageLayoutOffsets"));
         Object recentsView = callNoArgs(delegate, "getMRecentsView");
+        return getRecentsPageCount(recentsView, getFieldObject(delegate, "mPageLayoutOffsets"), layoutOffsetCount);
+    }
+
+    private static int getRecentsPageCount(Object recentsView, Object layoutOffsets) {
+        int layoutOffsetCount = getArrayLength(layoutOffsets);
+        return getRecentsPageCount(recentsView, layoutOffsets, layoutOffsetCount);
+    }
+
+    private static int getRecentsPageCount(Object recentsView, Object layoutOffsets, int layoutOffsetCount) {
         int taskViewCount = getInt(callNoArgs(recentsView, "getTaskViewCount"), -1);
         if (layoutOffsetCount > 0 && taskViewCount > 0) {
             return Math.min(layoutOffsetCount, taskViewCount);
