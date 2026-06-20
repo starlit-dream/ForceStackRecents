@@ -5,7 +5,7 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
-import java.lang.reflect.Constructor;
+import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Locale;
@@ -13,8 +13,8 @@ import java.util.Locale;
 public class ForceStackRecents implements IXposedHookLoadPackage {
     private static final String TAG = "FSR: ";
 
-    // Runtime toggles. Defaults are conservative: low-risk exact hooks are enabled, high-risk
-    // animation/split experiments are opt-in via adb shell setprop.
+    // Runtime toggles. All fixes are enabled by default, but each can be disabled with adb shell
+    // setprop if a device-specific regression appears.
     private static final String PROP_STACK_PAGE_BOUNDARY = "persist.fsr.fix_stack_boundary";
     private static final String PROP_STACK_MENU_BUTTON = "persist.fsr.fix_stack_menu";
     private static final String PROP_HOME_ANIMATION = "persist.fsr.fix_home_animation";
@@ -36,11 +36,11 @@ public class ForceStackRecents implements IXposedHookLoadPackage {
             if (isPropEnabled(PROP_STACK_MENU_BUTTON, true)) {
                 hookStackMenuButton(p.classLoader);
             }
-            if (isPropEnabled(PROP_HOME_ANIMATION, false)) {
-                hookHomeAnimationOptIn(p.classLoader);
+            if (isPropEnabled(PROP_HOME_ANIMATION, true)) {
+                hookHomeAnimationFix(p.classLoader);
             }
-            if (isPropEnabled(PROP_SPLIT_FREEFORM, false)) {
-                hookSplitFreeformOptIn(p.classLoader);
+            if (isPropEnabled(PROP_SPLIT_FREEFORM, true)) {
+                hookSplitFreeformFix(p.classLoader);
             }
         } catch (Throwable t) {
             log("init", t);
@@ -144,14 +144,25 @@ public class ForceStackRecents implements IXposedHookLoadPackage {
             Class<?> cl = loader.loadClass("com.android.quickstep.views.OplusStackTaskView");
             XposedHelpers.findAndHookMethod(cl, "setStableAlpha", Float.TYPE, new XC_MethodHook() {
                 protected void afterHookedMethod(MethodHookParam param) {
-                    if (param.args[0] instanceof Float && ((Float) param.args[0]).floatValue() > 0.0f) {
-                        revealStackMenuButton(param.thisObject);
-                    }
+                    revealStackMenuButton(param.thisObject);
                 }
             });
             log("hooked OplusStackTaskView.setStableAlpha(float) menu reveal");
         } catch (Throwable t) {
             log("OplusStackTaskView.setStableAlpha", t);
+        }
+
+        hookRevealAfterNoArg(loader, "com.android.quickstep.views.OplusTaskViewImpl", "updateTaskMenuBtnSrc");
+        try {
+            Class<?> cl = loader.loadClass("com.android.quickstep.views.OplusTaskViewImpl");
+            XposedHelpers.findAndHookMethod(cl, "setTaskMenuBtnSrc", Integer.TYPE, String.class, new XC_MethodHook() {
+                protected void afterHookedMethod(MethodHookParam param) {
+                    revealStackMenuButton(param.thisObject);
+                }
+            });
+            log("hooked OplusTaskViewImpl.setTaskMenuBtnSrc(int,String) menu reveal");
+        } catch (Throwable t) {
+            log("OplusTaskViewImpl.setTaskMenuBtnSrc", t);
         }
     }
 
@@ -170,71 +181,151 @@ public class ForceStackRecents implements IXposedHookLoadPackage {
     }
 
     /**
-     * JADX: RecentsActivity.startHome() uses switchToScreenshot(... finishRecentsAnimation(...))
-     * when ENABLE_QUICKSTEP_LIVE_TILE is true; startHomeInternal() uses the direct remote Home
-     * transition. This opt-in hook forces the direct path only for explicit testing.
+     * Keep the OEM Home transition intact. Replacing startHome() bypasses cleanup in some builds and
+     * can desync the launcher/app layers, so this hook only hides stale fallback/overlay views after
+     * the normal lifecycle has run.
      */
-    private static void hookHomeAnimationOptIn(ClassLoader loader) {
+    private static void hookHomeAnimationFix(ClassLoader loader) {
         try {
             Class<?> cl = loader.loadClass("com.android.quickstep.RecentsActivity");
-            XposedHelpers.findAndHookMethod(cl, "startHome", new XC_MethodReplacement() {
-                protected Object replaceHookedMethod(MethodHookParam param) {
-                    callNoArgs(param.thisObject, "startHomeInternal");
-                    return null;
+            XposedHelpers.findAndHookMethod(cl, "startHome", new XC_MethodHook() {
+                protected void afterHookedMethod(MethodHookParam param) {
+                    hideRecentsDecor(param.thisObject);
                 }
             });
-            log("hooked RecentsActivity.startHome() -> startHomeInternal() opt-in");
+            hookHideRecentsDecorAfterNoArg(cl, "onPause");
+            hookHideRecentsDecorAfterNoArg(cl, "onStop");
+            hookHideRecentsDecorAfterNoArg(cl, "onDestroy");
+            log("hooked RecentsActivity lifecycle stale decor cleanup");
         } catch (Throwable t) {
-            log("RecentsActivity.startHome", t);
+            log("RecentsActivity lifecycle cleanup", t);
+        }
+    }
+
+    private static void hookHideRecentsDecorAfterNoArg(Class<?> cl, String methodName) {
+        try {
+            XposedHelpers.findAndHookMethod(cl, methodName, new XC_MethodHook() {
+                protected void afterHookedMethod(MethodHookParam param) {
+                    hideRecentsDecor(param.thisObject);
+                }
+            });
+        } catch (Throwable t) {
+            log("RecentsActivity." + methodName, t);
         }
     }
 
     /**
-     * JADX: OplusBaseRecentsAnimationController.finishSplitScreenController(...) sets
-     * mFinishTargetIsLauncher=true and delegates to finishSplitScreenCore(...), which calls
-     * FlexibleWindowManager.notifyMinimizedReady(...). Keep this as a diagnostic hook only: the
-     * method is exact, opt-in, and does not modify arguments/results.
+     * JADX: OplusBaseSwipeUpHandler.finishRecentsControllerToSplitScreen(...) is the exact drag
+     * edge path. It delegates to RecentsAnimationController.finishSplitScreenController(...) and
+     * then releases transition surfaces. The fix keeps this path alive by marking the controller as
+     * launcher-target before the OEM code enters finishSplitScreenController, without changing args.
      */
-    private static void hookSplitFreeformOptIn(ClassLoader loader) {
+    private static void hookSplitFreeformFix(ClassLoader loader) {
+        try {
+            Class<?> cl = loader.loadClass("com.oplus.quickstep.gesture.OplusBaseSwipeUpHandler");
+            XposedBridge.hookAllMethods(cl, "finishRecentsControllerToSplitScreen", new XC_MethodHook() {
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    Object controller = getFieldObject(param.thisObject, "mRecentsAnimationController");
+                    setBooleanField(controller, "mFinishTargetIsLauncher", true);
+                }
+            });
+            log("hooked OplusBaseSwipeUpHandler.finishRecentsControllerToSplitScreen(...) controller target fix");
+        } catch (Throwable t) {
+            log("OplusBaseSwipeUpHandler.finishRecentsControllerToSplitScreen", t);
+        }
+
         try {
             Class<?> cl = loader.loadClass("com.android.quickstep.OplusBaseRecentsAnimationController");
             XposedBridge.hookAllMethods(cl, "finishSplitScreenController", new XC_MethodHook() {
                 protected void beforeHookedMethod(MethodHookParam param) {
                     setBooleanField(param.thisObject, "mFinishTargetIsLauncher", true);
-                    log("finishSplitScreenController opt-in observed");
                 }
             });
-            log("hooked OplusBaseRecentsAnimationController.finishSplitScreenController(...) opt-in");
+            log("hooked OplusBaseRecentsAnimationController.finishSplitScreenController(...) launcher target fix");
         } catch (Throwable t) {
             log("OplusBaseRecentsAnimationController.finishSplitScreenController", t);
         }
     }
 
     private static int getRecentsPageCount(Object delegate) {
+        int layoutOffsetCount = getArrayLength(getFieldObject(delegate, "mPageLayoutOffsets"));
         Object recentsView = callNoArgs(delegate, "getMRecentsView");
+        int taskViewCount = getInt(callNoArgs(recentsView, "getTaskViewCount"), -1);
+        if (layoutOffsetCount > 0 && taskViewCount > 0) {
+            return Math.min(layoutOffsetCount, taskViewCount);
+        }
+        if (taskViewCount > 0) {
+            return taskViewCount;
+        }
+        if (layoutOffsetCount > 0) {
+            return layoutOffsetCount;
+        }
         int pageCount = getInt(callNoArgs(recentsView, "getPageCount"), -1);
         if (pageCount > 0) {
             return pageCount;
-        }
-        int taskViewCount = getInt(callNoArgs(recentsView, "getTaskViewCount"), -1);
-        if (taskViewCount > 0) {
-            return taskViewCount;
         }
         return getInt(callNoArgs(recentsView, "getChildCount"), 0);
     }
 
     private static void revealStackMenuButton(Object taskView) {
-        Object button = getFieldObject(taskView, "mStackMenuBtn");
-        if (button == null) {
-            Object header = getFieldObject(taskView, "mHeader");
-            button = callNoArgs(header, "getMenuBtn");
-        }
+        Object button = findStackMenuButton(taskView);
         if (button == null) {
             return;
         }
         call(button, "setVisibility", new Class[]{Integer.TYPE}, new Object[]{Integer.valueOf(VISIBLE)});
         call(button, "setAlpha", new Class[]{Float.TYPE}, new Object[]{Float.valueOf(1.0f)});
         call(button, "setEnabled", new Class[]{Boolean.TYPE}, new Object[]{Boolean.TRUE});
+    }
+
+    private static Object findStackMenuButton(Object taskView) {
+        Object button = getFieldObject(taskView, "mStackMenuBtn");
+        if (button != null) {
+            return button;
+        }
+        Object header = getFieldObject(taskView, "mHeader");
+        button = callNoArgs(header, "getMenuBtn");
+        if (button != null) {
+            return button;
+        }
+        return findMenuLikeChild(taskView, 0);
+    }
+
+    private static Object findMenuLikeChild(Object view, int depth) {
+        if (view == null || depth > 5) {
+            return null;
+        }
+        CharSequence contentDescription = getCharSequence(callNoArgs(view, "getContentDescription"));
+        String className = view.getClass().getName().toLowerCase(Locale.US);
+        String description = contentDescription == null ? "" : contentDescription.toString().toLowerCase(Locale.US);
+        if ((className.contains("image") || className.contains("button"))
+                && (description.contains("menu") || description.contains("more") || description.contains("更多"))) {
+            return view;
+        }
+        int childCount = getInt(callNoArgs(view, "getChildCount"), 0);
+        for (int i = 0; i < childCount; i++) {
+            Object child = call(view, "getChildAt", new Class[]{Integer.TYPE}, new Object[]{Integer.valueOf(i)});
+            Object result = findMenuLikeChild(child, depth + 1);
+            if (result != null) {
+                return result;
+            }
+        }
+        return null;
+    }
+
+    private static void hideRecentsDecor(Object activity) {
+        hideView(getFieldObject(activity, "mFallbackRecentsView"));
+        hideView(firstNonNull(
+                getFieldObject(activity, "mOverlayView"),
+                getFieldObject(activity, "mScrimView"),
+                getFieldObject(activity, "mScreenshotView")));
+    }
+
+    private static void hideView(Object view) {
+        if (view == null) {
+            return;
+        }
+        call(view, "setContentAlpha", new Class[]{Float.TYPE}, new Object[]{Float.valueOf(0.0f)});
+        call(view, "setAlpha", new Class[]{Float.TYPE}, new Object[]{Float.valueOf(0.0f)});
     }
 
     private static Object getFieldObject(Object target, String fieldName) {
@@ -294,6 +385,27 @@ public class ForceStackRecents implements IXposedHookLoadPackage {
 
     private static int getInt(Object value, int fallback) {
         return value instanceof Integer ? ((Integer) value).intValue() : fallback;
+    }
+
+    private static int getArrayLength(Object value) {
+        if (value == null || !value.getClass().isArray()) {
+            return -1;
+        }
+        return Array.getLength(value);
+    }
+
+    private static CharSequence getCharSequence(Object value) {
+        return value instanceof CharSequence ? (CharSequence) value : null;
+    }
+
+    private static Object firstNonNull(Object first, Object second, Object third) {
+        if (first != null) {
+            return first;
+        }
+        if (second != null) {
+            return second;
+        }
+        return third;
     }
 
     private static int clamp(int value, int min, int max) {
